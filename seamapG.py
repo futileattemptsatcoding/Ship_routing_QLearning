@@ -2,22 +2,15 @@
 import geopy
 import csv
 import numpy as np
-
-# %%
-# start_coord = [18.9207, 72.8207] #latitude, longitude
-# end_coord = [13.0827, 80.2778]
-
-start_coord = [13.0827, 80.2778]
-end_coord = [18.9207, 72.8207]
-
-
-# %%
 from geopy.distance import distance
 from geopy.geocoders import Nominatim
 import time
 from math import fabs
 
 # %%
+start_coord = [13.0827, 80.2778]
+end_coord = [18.9207, 72.8207]
+start_coord = [15,70]
 min_lat = 5
 max_lat = 30
 min_lon = 30
@@ -26,6 +19,22 @@ max_lon = 100
 lat_step = 0.1
 lon_step = 0.1
 
+lat_range = np.arange(min_lat, max_lat+1,lat_step)
+lon_range = np.arange(min_lon, max_lon+1,lon_step)
+
+reward_weights = {"direction_reward": 100,
+                  "wind_speed": 1,
+                  "visibility":20,
+                  "temp":1,
+                  "land_proximity": 10,
+                  "land_prox_const":1000,
+                  "distance_from_goal":100000,
+                  "distance_penalty":50
+                  }
+
+
+# %%
+lat_range
 
 # %%
 import geopandas as gpd
@@ -45,20 +54,44 @@ with open('LandCoords.csv', 'w', newline='') as fh:
             lon = min_lon
             while lon <= max_lon:
                 point = Point(lon, lat)
-                # Check if the point is within any land area
                 if land.contains(point).any():
                     writer.writerow([lat, lon])
-                    #check if theres a nearby water area so that it becomes a shore.
-                    flag = False
-                    for ir in [-1,1]:
-                        for ic in [-1,1]:
+                    is_shore = False
+                    for ir in [-lat_step,lat_step]:
+                        for ic in [-lon_step,lon_step]:
                             if not land.contains(Point(lon+ic, lat+ir)).any():
-                                flag = True
+                                is_shore = True
                                 writer_sh.writerow([lat+ir,lon+ic])
                                 break
+                        if is_shore: break
                     
                 lon += lon_step
             lat += lat_step
+
+
+# %%
+import math
+
+def calculate_bearing(lat1, lon1, lat2, lon2):
+    lat1 = math.radians(lat1)
+    lon1 = math.radians(lon1)
+    lat2 = math.radians(lat2)
+    lon2 = math.radians(lon2)
+
+    delta_lon = lon2 - lon1
+
+    x = math.sin(delta_lon) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1) * math.cos(lat2) * math.cos(delta_lon))
+    initial_bearing = math.atan2(x, y)
+
+    initial_bearing = math.degrees(initial_bearing)
+
+    bearing = (initial_bearing + 360) % 360
+
+    return bearing
+
+
+# %%
 
 
 # %%
@@ -72,32 +105,48 @@ with open("LandCoords.csv",'r',newline='') as fh:
         
 
 # %%
-import requests
-API_KEY = '' #use your own key, people
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import csv
+
+shapefile_path = "/Users/krisha/STUFF/env2/NE Admin 0 Countries/ne_110m_admin_0_countries.shp"
+land = gpd.read_file(shapefile_path)
+
+fig, ax = plt.subplots(figsize=(12, 8))
+land.boundary.plot(ax=ax, linewidth=1, color="black")
+
+with open("LandCoords.csv", 'r') as fh:
+    reader = csv.reader(fh)
+    land_points = [(float(row[0]), float(row[1])) for row in reader]
+    land_lats, land_lons = zip(*land_points)
+    ax.scatter(land_lons, land_lats, color="brown", s=10, label="Land Points", alpha=0.7)
+
+with open("ShoreCoords.csv", 'r') as fsh:
+    reader_sh = csv.reader(fsh)
+    shore_points = [(float(row[0]), float(row[1])) for row in reader_sh]
+    shore_lats, shore_lons = zip(*shore_points)
+    ax.scatter(shore_lons, shore_lats, color="blue", s=10, label="Shore Points", alpha=0.7)
+
+ax.set_xlim(min_lon, max_lon)
+ax.set_ylim(min_lat, max_lat)
+ax.set_xlabel("Longitude")
+ax.set_ylabel("Latitude")
+plt.title("Map of Land and Shore Points")
+plt.legend()
+
+plt.show()
+
 
 # %%
 import random
 
 def generate_synthetic_weather(lat, lon):
-    # Simulating temperature (range 15°C to 40°C)
     temp = random.uniform(15, 40)
-    
-    # Simulating humidity (range 30% to 100%)
     humidity = random.uniform(30, 100)
-    
-    # Simulating wind speed (range 0 to 15 m/s)
     wind_speed = random.uniform(0, 15)
-    
-    # Simulating wind direction (0 to 360 degrees)
     wind_deg = random.uniform(0, 360)
-    
-    # Simulating visibility (in meters, range 1000m to 10000m)
     visibility = random.uniform(1000, 10000)
-    
-    # Simulating cloud cover (percentage, 0% to 100%)
     cloud = random.uniform(0, 100)
-    
-    # Pack the data into a dictionary to simulate the structure of real weather data
     weather_data = {
         'main': {
             'temp': temp,
@@ -119,51 +168,48 @@ def generate_synthetic_weather(lat, lon):
 # %%
 import json
 
-# Function to generate and store weather data for all grid points
-def precompute_weather_data(lat_range, lon_range, lat_step, lon_step):
+def precompute_weather_data(lat_range, lon_range):
+    global weather_data 
     weather_data = {}
+    
     for lat in lat_range:
         for lon in lon_range:
             weather_data[(lat, lon)] = generate_synthetic_weather(lat, lon)
-    # Convert the dictionary to a format suitable for JSON
+
     weather_data = {f"{lat},{lon}": data for (lat, lon), data in weather_data.items()}
     with open('weather_data.json', 'w') as f:
         json.dump(weather_data, f)
 
-# Function to load precomputed weather data
 def load_weather_data():
     with open('weather_data.json', 'r') as f:
         weather_data = json.load(f)
-    # Convert back the dictionary to the original format
     weather_data = {tuple(map(float, key.split(','))): value for key, value in weather_data.items()}
     return weather_data
 
-precompute_weather_data(lat_range, lon_range, lat_step, lon_step)
-weather_data = load_weather_data()
+
 
 # %%
-def get_weather_reward(lat,lon,direction):
-    # current_weather_url = f'http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={API_KEY}&units=metric'
-    # response = requests.get(current_weather_url)
-    # current_weather = response.json()
-    # print(current_weather)
-    # print(lat,lon)
-    # #5 day forecast
-    # forecast_url = f'http://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={API_KEY}&units=metric'
-    # response = requests.get(forecast_url)
-    # forecast_data = response.json()
-    
-    #for now use simulated data:
+
+optimal_direction = calculate_bearing(start_coord[0], start_coord[1], end_coord[0], end_coord[1])
+
+optimal_direction = calculate_bearing(start_coord[0], start_coord[1], end_coord[0], end_coord[1])
+
+def get_weather_reward(lat, lon, direction):
     current_weather = weather_data.get((lat, lon), generate_synthetic_weather(lat, lon))
     temp = current_weather['main']['temp']
     humidity = current_weather['main']['humidity']
     wind_speed = current_weather['wind']['speed']
-    wind_deg = current_weather['wind']['deg']
-    cloud = current_weather['clouds']['all']
     visibility = current_weather['visibility']
-    reward = (10 - wind_speed) + (visibility - 1000) * 20 + fabs(temp - 30)
-    ##reward += direction_alignment_reward
-    return reward
+    direction_diff = min(abs(direction - optimal_direction), 360 - abs(direction - optimal_direction))
+    direction_reward = reward_weights["direction_reward"] * (1 - direction_diff / 180)
+    base_reward = (
+        reward_weights["wind_speed"] * (10 - wind_speed) +
+        (visibility - 1000) * reward_weights["visibility"] +
+        reward_weights["temp"] * abs(temp - 30)
+    )
+
+    return base_reward + direction_reward
+
 
 # %%
 from rtree import index
@@ -171,16 +217,14 @@ from geopy.distance import geodesic
 
 def store_in_rtree():
     idx = index.Index()
-    with open('LandCoords.csv','r') as fh:
+    with open("LandCoords.csv",'r') as fh:
         reader = csv.reader(fh)
         for i, (lat,lon) in enumerate(reader):
             idx.insert(i,(float(lon),float(lat),float(lon),float(lat)))
     return idx
 
-with open('LandCoords.csv','r') as fh:
-        reader = list(csv.reader(fh))
-
-def get_land_proximity_reward(idx,lat,lon,end_coord):
+# %%
+def get_land_reward(idx,lat,lon,end_coord):
     min_dist = float('inf')
     for i in idx.nearest((lon,lat,lon,lat)):
         candidate_coord = reader[i]
@@ -189,31 +233,12 @@ def get_land_proximity_reward(idx,lat,lon,end_coord):
             min_dist = distance
             nearest_land_coord = candidate_coord
     
-    return(-10*min_dist - 10*geodesic([lat,lon],[end_coord[0],end_coord[1]]))
+    return(reward_weights["land_proximity"]*(reward_weights["land_prox_const"]-min_dist))
 
-
-# %%
-#populating the reward matrix:
-R = [[]]
-# row = 0
-# col = 0
-# for i, lat in enumerate(np.arange(min_lat,max_lat,lat_step)):
-#     for j, lon in enumerate(np.arange(min_lon,max_lon,lon_step)):
-#         weather_reward = get_weather_reward(i,j)
-#         land_reward = get_land_proximity_reward(i,j)
-#         R[i][j] = weather_reward + land_reward
-
-
-# %%
-num_states = len(np.arange(min_lat, max_lat, lat_step)) * len(np.arange(min_lon, max_lon, lon_step))
-num_actions = 8  # Possible directions: N, S, E, W, NE, NW, SE, SW
-lat_range = np.arange(min_lat, max_lat, lat_step)
-lon_range = np.arange(min_lon, max_lon, lon_step)
-num_lat = len(lat_range)
-num_lon = len(lon_range)
-
-#alt: only look at the recatangle with diagonal points start and end
-#coordinates? Will reduce complexity but might give more inefficient result.
+def dist_from_goal_reward(lat,lon,next_lat, next_lon, end_coord):
+    current_distance = geodesic((lat, lon), (end_coord[0], end_coord[1])).km
+    next_distance = geodesic((next_lat, next_lon), (end_coord[0], end_coord[1])).km
+    return reward_weights["distance_from_goal"] * (current_distance - next_distance) / current_distance if current_distance > next_distance else -1*(reward_weights["distance_penalty"])  
 
 # %%
 
@@ -231,52 +256,27 @@ def lat_lon_to_indices(lat, lon,lat_step,lon_step):
 
 # %%
 def check_for_max(lat,lon):
-    max_lat = 0
-    max_lon = 0
+    lat_max = 0
+    lon_max = 0
     maxc = 0
     x,y = lat_lon_to_indices(lat,lon)
     for i in range(x-1,x+2):
         for j in range(y-1,y+2):
-            if(Q[i][j]>maxc or (i!=x or j!=y)):
+            if(Q[i][j]>maxc and (i!=x or j!=y)):
                 maxc = Q[i][j]
-                max_lat = i
-                max_lon = j
-    return(max_lat,max_lon)
+                lat_max = i
+                lon_max = j
+    return(lat_max,lon_max)
 
 # %%
-import math
-
-def calculate_bearing(lat1, lon1, lat2, lon2):
-    # Convert latitude and longitude from degrees to radians
-    lat1 = math.radians(lat1)
-    lon1 = math.radians(lon1)
-    lat2 = math.radians(lat2)
-    lon2 = math.radians(lon2)
-
-    # Difference in longitudes
-    delta_lon = lon2 - lon1
-
-    # Bearing calculation
-    x = math.sin(delta_lon) * math.cos(lat2)
-    y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1) * math.cos(lat2) * math.cos(delta_lon))
-    initial_bearing = math.atan2(x, y)
-
-    # Convert bearing from radians to degrees
-    initial_bearing = math.degrees(initial_bearing)
-
-    # Normalize the bearing to be within 0-360 degrees
-    bearing = (initial_bearing + 360) % 360
-
-    return bearing
 
 
 # %%
-global optimal_direction, count_threshold, count, del_lat_th, del_lon_th, ref_lat, ref_lon
-optimal_direction = calculate_bearing(start_coord[0], start_coord[1], end_coord[0], end_coord[1])
+global count_threshold, count, del_lat_th, del_lon_th, ref_lat, ref_lon
 count_threshold = 15
 count = 0
-del_lat_th = 0.01
-del_lon_th = 0.01
+del_lat_th = lat_step
+del_lon_th = lon_step
 ref_lat = start_coord[0]
 ref_lon = start_coord[1]
 
@@ -287,9 +287,9 @@ def check_if_stuck(lat, lon):
     if (abs(lat - ref_lat) > del_lat_th) or (abs(lon - ref_lon) > del_lon_th):
         ref_lat = lat
         ref_lon = lon
-        count = 0  # Reset the count if significant movement is detected
+        count = 0  
     else:
-        count += 1  # Increment count if the point hasn't moved significantly
+        count += 1 
     
     if count > count_threshold:
         return True
@@ -298,29 +298,14 @@ def check_if_stuck(lat, lon):
 
 
 # %%
-def apply_random_perturbation(current_lat, current_lon,lat_op,lon_op):
-    perturb_lat = current_lat + lat_op*random.uniform(0, 0.1)
-    perturb_lon = current_lon + lon_op*random.uniform(0, 0.1)  
-    return perturb_lat, perturb_lon
-
-def apply_significant_perturbation_1(lat, lon, lat_op, lon_op, end_coord):
-    # Move towards the goal with some randomness
-    goal_lat, goal_lon = end_coord
-    lat += lat_step*int(lat_op*(goal_lat - lat) *random.uniform(0.1, 0.3))
-    lon += lon_step*int(lon_op*(goal_lon - lon) *random.uniform(0.1, 0.3))
+def apply_significant_perturbation(lat,lon):
+    goal_lat,goal_lon = end_coord
+    lat+= (goal_lat-lat)*lat_step
+    lon+= (goal_lon -lon)*lon_step
     return lat,lon
-
-def apply_significant_perturbation(lat, lon, lat_op, lon_op, end_coord):
-    # Move towards the goal with some randomness
-    goal_lat, goal_lon = end_coord
-    lat += lat_op*(goal_lat - lat)*0.1
-    lon += lon_op*(goal_lon - lon)*0.1
-    return lat,lon
-    
-    
 
 # %%
-def propagate_negative_reward(lat_idx,lon_idx,action,propagation_factor=0.5,radius=2):
+def propagate_negative_reward(lat_idx,lon_idx,prop_factor=0.5,radius=2):
     for i in range(-radius,radius+1):
         for j in range(-radius,radius+1):
             if i==0 and j==0:
@@ -328,198 +313,422 @@ def propagate_negative_reward(lat_idx,lon_idx,action,propagation_factor=0.5,radi
             new_lat_idx = max(0,min(lat_idx+i,Q.shape[0]-1))
             new_lon_idx = max(0,min(lon_idx+j,Q.shape[1]-1))
             distance = np.sqrt(i**2 + j**2)
-            Q[new_lat_idx,new_lon_idx,action] -= propagation_factor*Q[lat_idx,lon_idx,action]/distance
+            Q[new_lat_idx,new_lon_idx] -= prop_factor*Q[new_lat_idx,new_lon_idx]/distance
             
 
 # %%
-#initializing Q matrix:
-def initialize_Q_matrix(lat_step,lon_step):
-    with open("LandCoords.csv",'r',newline='') as fh:
+import numpy as np
+import csv
+
+def initialize_Q_rough():
+    n_lat = len(lat_range)+1
+    n_lon = len(lon_range)+1
+    goal_lat_idx, goal_lon_idx = lat_lon_to_indices(end_coord[0], end_coord[1], lat_step, lon_step)
+    n_actions = 8
+
+    global Q
+    Q = np.zeros((n_lat, n_lon))
+
+    with open("LandCoords.csv", 'r', newline='') as fh:
         reader = csv.reader(fh)
         for row in reader:
-            r,c = lat_lon_to_indices(float(row[0]),float(row[1]),lat_step,lon_step)
-            Q[r,c] = -100000
-    
-    with open("ShoreCoords.csv",'r',newline='') as fsh:
-        reader = csv.reader(fsh)
+            r, c = lat_lon_to_indices(float(row[0]), float(row[1]), lat_step, lon_step)
+            print("Indicies are",r,c)
+            Q[r, c] = -1000  
+
+    for lat in lat_range:
+        for lon in lon_range:
+            lat_idx,lon_idx = lat_lon_to_indices(lat,lon,lat_step,lon_step)
+            distance_to_goal = np.sqrt((lat_idx - goal_lat_idx)**2 + (lon_idx - goal_lon_idx)**2)
+            Q[lat_idx, lon_idx] = reward_weights["distance_from_goal"] * (1 / (distance_to_goal + 1))
+
+    goal_reward = 100000
+    Q[goal_lat_idx, goal_lon_idx] = goal_reward
+
+
+# %%
+def initialize_Q():
+    n_lat = len(lat_range) + 1
+    n_lon = len(lon_range) + 1
+    goal_lat_idx, goal_lon_idx = lat_lon_to_indices(end_coord[0], end_coord[1], lat_step, lon_step)
+
+    global Q
+    Q = np.random.uniform(low=0, high=0.1, size=(n_lat, n_lon))  
+
+    with open("LandCoords.csv", 'r', newline='') as fh:
+        reader = csv.reader(fh)
         for row in reader:
-            r,c = lat_lon_to_indices(float(row[0]),float(row[1]),lat_step,lon_step)
-            Q[r,c] = 100
+            r, c = lat_lon_to_indices(float(row[0]), float(row[1]), lat_step, lon_step)
+            Q[r, c] = -1000 
+
+    max_distance = np.sqrt((n_lat - 1)**2 + (n_lon - 1)**2)
+    for lat_idx in range(n_lat):
+        for lon_idx in range(n_lon):
+            if Q[lat_idx, lon_idx] >= 0:  
+                distance_to_goal = np.sqrt((lat_idx - goal_lat_idx)**2 + (lon_idx - goal_lon_idx)**2)
+                Q[lat_idx, lon_idx] += (1 - distance_to_goal / max_distance) * 10  
+
+    boundary_width = 5
+    Q[:boundary_width, :] -= 5
+    Q[-boundary_width:, :] -= 5
+    Q[:, :boundary_width] -= 5
+    Q[:, -boundary_width:] -= 5
+
+    goal_reward = 1000
+    Q[goal_lat_idx, goal_lon_idx] = goal_reward
+
+
+    Q = np.clip(Q, -1000, 1000)
+
+# %%
+global LAND_FLAG 
+LAND_FLAG = -1000
+
+def initialize_Q_linearSpace():
     
-    r,c = lat_lon_to_indices(end_coord[0],end_coord[1],lat_step,lon_step)
-    Q[r,c] = 100000
-    print("Q matrix initialized")
+    n_lat = len(lat_range) + 1
+    n_lon = len(lon_range) + 1
+    goal_lat_idx, goal_lon_idx = lat_lon_to_indices(end_coord[0], end_coord[1], lat_step, lon_step)
+
+    global Q
+    Q = np.zeros((n_lat, n_lon))
+
+    for lat_idx in range(n_lat):
+        for lon_idx in range(n_lon):
+            
+            current_lat = min_lat + lat_idx * lat_step
+            current_lon = min_lon + lon_idx * lon_step
+            
+           
+            distance_to_goal = geodesic(
+                (current_lat, current_lon), 
+                (end_coord[0], end_coord[1])
+            ).kilometers
+
+            
+            Q[lat_idx, lon_idx] = 1000 * np.exp(-distance_to_goal/1000) 
+
     
+    with open("LandCoords.csv", 'r', newline='') as fh:
+        reader = csv.reader(fh)
+        for row in reader:
+            r, c = lat_lon_to_indices(float(row[0]), float(row[1]), lat_step, lon_step)
+            Q[r, c] = LAND_FLAG  
+
+    
+    Q[goal_lat_idx, goal_lon_idx] = 1000
+
+    
+    ocean_mask = Q > -1000
+    if ocean_mask.any():
+        ocean_values = Q[ocean_mask]
+        Q[ocean_mask] = np.interp(ocean_values, 
+                                 (ocean_values.min(), ocean_values.max()), 
+                                 (1, 999))  # Scale ocean values between 1 and 999
+
+# %%
+initialize_Q_linearSpace()
+
+# %%
+import numpy as np
+import geopandas as gpd
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
+from matplotlib import cm
+from shapely.geometry import Point
+import matplotlib.patches as patches
+
+# Load country boundaries
+shapefile_path = "/Users/krisha/STUFF/env2/NE Admin 0 Countries/ne_110m_admin_0_countries.shp"
+land = gpd.read_file(shapefile_path)
+
+
+# Prepare map for plotting
+fig, ax = plt.subplots(figsize=(12, 8))
+land.boundary.plot(ax=ax, linewidth=1, color="black")
+
+# Normalize colors for the range of Q values
+norm = Normalize(vmin=np.min(Q), vmax=np.max(Q))
+cmap = cm.ScalarMappable(norm=norm, cmap="viridis")
+cmap.set_array([])
+
+# Plot each cell as a rectangle color-coded by Q matrix value
+for i, lat in enumerate(lat_range):
+    for j, lon in enumerate(lon_range):
+        weight = Q[i, j]
+        color = cmap.to_rgba(weight)
+        
+        # Add a rectangle for each lat-lon cell in the matrix
+        ax.add_patch(patches.Rectangle(
+            (lon, lat), lon_step, lat_step,
+            facecolor=color, edgecolor="none", alpha=0.6
+        ))
+
+# Add colorbar and labels
+plt.colorbar(cmap, ax=ax, label="Q Matrix Weights")
+ax.set_xlim(min_lon, max_lon)
+ax.set_ylim(min_lat, max_lat)
+ax.set_xlabel("Longitude")
+ax.set_ylabel("Latitude")
+plt.title("Q Matrix Weighted Map of Region")
+
+plt.show()
+
+
+Q[-1][-1]
 
 # %%
 from geopy.distance import geodesic
+import matplotlib.pyplot as plt
+import geopandas as gpd
 
-def q_learning(lat_step,lon_step,start_coord, end_coord, alpha=0.1, gamma=0.9, epsilon=0.2, episodes=1):
+# %%
+def q_learning_land(lat_step, lon_step, start_coord, end_coord, alpha=0.1, gamma=0.9, epsilon=0.2, episodes=1,loop_range=12000):
     global Q, actions, lat_range, lon_range
+    LAND_FLAG = -1000
     actions = [
-    (-1, 0),  # South
-    (1, 0),   # North
-    (0, -1),  # West
-    (0, 1),   # East
-    (-1, -1), # Southwest
-    (-1, 1),  # Southeast
-    (1, -1),  # Northwest
-    (1, 1)    # Northeast
+        (-1, 0),  # South
+        (1, 0),   # North
+        (0, -1),  # West
+        (0, 1),   # East
+        (-1, -1), # Southwest
+        (-1, 1),  # Southeast
+        (1, -1),  # Northwest
+        (1, 1)    # Northeast
     ] 
-    num_actions=len(actions)
-    num_lat = int((max_lat - min_lat)*lat_step) +1
-    num_lon = int((max_lon - min_lon)*lon_step) +1
-    lat_range = np.arange(min_lat,max_lat+1,lat_step)
-    lon_range = np.arange(min_lon,max_lon+1,lon_step)
-    initialize_Q_matrix(lat_step,lon_step)
+    num_actions = len(actions)
+    num_lat = int((max_lat - min_lat) / lat_step) + 1
+    num_lon = int((max_lon - min_lon) / lon_step) + 1
+    lat_range = np.arange(min_lat, max_lat + lat_step, lat_step)
+    lon_range = np.arange(min_lon, max_lon + lon_step, lon_step)
+    
+    precompute_weather_data(lat_range, lon_range)
+    weather_data = load_weather_data()
+    initialize_Q()
     idx = store_in_rtree()
+    
+    trajectory = []
     
     for episode in range(episodes):
         lat, lon = start_coord[0], start_coord[1]
-        prev_lat, prev_lon = lat, lon
-        count  = 0
-        while geodesic((lat, lon), (end_coord[0], end_coord[1])).km > 1 and count<3500:  # Stop when close to destination (e.g., 1 km)
-            print("Current lat: ", lat, "current lon: ", lon, " ", end='')
-            lat_idx, lon_idx = lat_lon_to_indices(lat, lon,lat_step,lon_step)
+        trajectory.append((lat, lon))
+        count = 0
+        
+        while geodesic((lat, lon), (end_coord[0], end_coord[1])).km > 1 and count < loop_range:
+            current_distance = geodesic((lat, lon), (end_coord[0], end_coord[1])).km
+            print(f"Current lat: {lat:.4f}, current lon: {lon:.4f}")
+            lat_idx, lon_idx = lat_lon_to_indices(lat, lon, lat_step, lon_step)
             
-            # Calculate rewards
-            direction = calculate_bearing(prev_lat, prev_lon, lat, lon)
-            weather_reward = get_weather_reward(lat, lon, direction)
-            #land_reward = get_land_proximity_reward(idx, lat, lon,end_coord)
-            reward = weather_reward #+ land_reward
-            print("reward: ",reward)
+    
+            valid_moves = []
+            for action, (dlat, dlon) in enumerate(actions):
+                next_lat = lat + dlat * lat_step
+                next_lon = lon + dlon * lon_step
+                if min_lat <= next_lat <= max_lat and min_lon <= next_lon <= max_lon:
+                    next_lat_idx, next_lon_idx = lat_lon_to_indices(next_lat, next_lon, lat_step, lon_step)
+                    
+                    if Q[next_lat_idx, next_lon_idx] != LAND_FLAG:
+                        valid_moves.append((Q[next_lat_idx, next_lon_idx], action))
             
-            # Markov selection process
+            if not valid_moves:
+                print("No valid moves available... applying perturbation")
+                lat, lon = apply_significant_perturbation(lat, lon, end_coord)
+                propagate_negative_reward(lat_idx, lon_idx)
+                continue
+            
             if np.random.uniform(0, 1) < epsilon:
-                action = np.random.randint(0, num_actions)
+                goal_bearing = calculate_bearing(lat, lon, end_coord[0], end_coord[1])
+                action_preferences = []
+                for q_val, action in valid_moves:
+                    dlat, dlon = actions[action]
+                    next_lat = lat + dlat * lat_step
+                    next_lon = lon + dlon * lon_step
+                    action_bearing = calculate_bearing(lat, lon, next_lat, next_lon)
+                    bearing_diff = min(abs(action_bearing - goal_bearing), 360 - abs(action_bearing - goal_bearing))
+                    action_preferences.append((bearing_diff, action))
+                action_preferences.sort()
+                action = action_preferences[np.random.randint(0, min(3, len(action_preferences)))][1]
             else:
-                action = np.argmax(Q[lat_idx, lon_idx])  # Choose the action with the maximum Q-value
+                # Choose action with highest neighboring Q-value from valid moves
+                action = max(valid_moves)[1]
             
-            # If close to the destination, stop random moves and go straight to the goal
-            if geodesic((lat, lon), (end_coord[0], end_coord[1])).km < 5:  # "Close enough" condition
-                action = np.argmin([
-                    geodesic(next_state(lat, lon, a, lat_step, lon_step), end_coord).km
-                    for a in range(num_actions)
-                ])
-            
-            # Calculate next state
+           
             next_lat, next_lon = next_state(lat, lon, action, lat_step, lon_step)
-            
-            # Check boundaries
-            if min_lat <= next_lat <= max_lat and min_lon <= next_lon <= max_lon:
-                next_lat_idx, next_lon_idx = lat_lon_to_indices(next_lat, next_lon,lat_step,lon_step)
-                next_state_valid = True
-            else:
-                next_state_valid = False
-                # if min_lat >= next_lat:
-                #     lat_op = 1
-                # elif max_lat <= next_lat:
-                #     lat_op = -1
-                # else:
-                #     lat_op = 0.3
-
-                # if min_lon >= next_lon:
-                #     lon_op = 1
-                # elif max_lon <= next_lon:
-                #     lon_op = -1
-                # else:
-                #     lon_op = 0.3
-                Q[lat_idx, lon_idx, action] += alpha * (-100 - Q[lat_idx, lon_idx, action])
-                lat,lon = apply_significant_perturbation_1(lat,lon,1,1,end_coord)
-                #propagating negative reward across nearby states:
-                propagate_negative_reward(lat_idx,lon_idx,action)
-                print("outer boundary... point modified...")
-            
-            if next_state_valid:
-                # Q-learning update
-                next_max_q = np.max(Q[next_lat_idx, next_lon_idx])
-                Q[lat_idx, lon_idx, action] += alpha * (reward + gamma * next_max_q - Q[lat_idx, lon_idx, action])
-                
-                # Move to the next state
-                prev_lat, prev_lon = lat, lon
-                lat, lon = next_lat, next_lon
+            next_lat_idx, next_lon_idx = lat_lon_to_indices(next_lat, next_lon, lat_step, lon_step)
             
             
-            #check if its stuck
-            if check_if_stuck(lat,lon):
-                epsilon *= 1.5
-                print("Hey its stuck...")
+            direction = calculate_bearing(lat, lon, next_lat, next_lon)
+            weather_reward = get_weather_reward(next_lat, next_lon, direction)
+            next_distance = geodesic((next_lat, next_lon), (end_coord[0], end_coord[1])).km
+            distance_reward = 100 * (current_distance - next_distance) / current_distance
+            
+            total_reward = weather_reward + distance_reward
+            
+        
+            Q[lat_idx, lon_idx] += alpha * (total_reward + gamma * Q[next_lat_idx, next_lon_idx] - Q[lat_idx, lon_idx])
+            
+            lat, lon = next_lat, next_lon
+            trajectory.append((lat, lon))
+            
+            if check_if_stuck(lat, lon):
+                epsilon = min(1.0, epsilon * 1.5)
+                print("Agent is stuck...")
+                #apply_significant_perturbation(lat,lon)
+            
             count += 1
-
-            
+        
         epsilon = max(0.01, epsilon * 0.99)
-
-
-# %%
-# start_coord = [13.0827, 80.2778]
-# end_coord = [18.9207, 72.8207]
-start_coord = [13, 80]
-end_coord = [19, 73]
-lat_step = 1
-lon_step = 1
-q_learning(lat_step,lon_step,start_coord,end_coord,epsilon=0.2)
-print("done")
-
-# %%
-def find_nearest_state(lat, lon):
-    lat_idx = int(round((lat - min_lat) / lat_step))
-    lon_idx = int(round((lon - min_lon) / lon_step))
-    return max(0, min(lat_idx, num_lat - 1)), max(0, min(lon_idx, num_lon - 1))
-
-def navigate_to_goal(start_coord, end_coord, max_steps=1000):
-    lat, lon = start_coord
-    path = [(lat, lon)]
     
-    for step in range(max_steps):
-        if geodesic((lat, lon), end_coord).km <= 1:
-            print(f"Goal reached in {step} steps!")
-            break
-        
-        lat_idx, lon_idx = find_nearest_state(lat, lon)
-        action = np.argmax(Q[lat_idx, lon_idx])
-        lat, lon = next_state(lat, lon, action, lat_step, lon_step)
-        path.append((lat, lon))
-        
-        if not (min_lat <= lat <= max_lat and min_lon <= lon <= max_lon):
-            lat, lon = apply_significant_perturbation(lat, lon, end_coord)
-            path.append((lat, lon))
+    plot_trajectory(trajectory, start_coord, end_coord)
+
+# %%
+def q_learning_land_perpendicular(lat_step, lon_step, start_coord, end_coord, alpha=0.1, gamma=0.9, epsilon=0.2, episodes=1,loop_range=12000):
+    global Q, actions, lat_range, lon_range
+    LAND_FLAG = -1000
+    actions = [
+        (-1, 0),  # South
+        (1, 0),   # North
+        (0, -1),  # West
+        (0, 1),   # East
+        (-1, -1), # Southwest
+        (-1, 1),  # Southeast
+        (1, -1),  # Northwest
+        (1, 1)    # Northeast
+    ] 
+    num_actions = len(actions)
+    num_lat = int((max_lat - min_lat) / lat_step) + 1
+    num_lon = int((max_lon - min_lon) / lon_step) + 1
+    lat_range = np.arange(min_lat, max_lat + lat_step, lat_step)
+    lon_range = np.arange(min_lon, max_lon + lon_step, lon_step)
     
-    return path
+    precompute_weather_data(lat_range, lon_range)
+    weather_data = load_weather_data()
+    initialize_Q()
+    idx = store_in_rtree()
+    
+    trajectory = []
+    
+    def check_adjacent_land(lat, lon, lat_step, lon_step):
+        land_directions = []
+        for dlat, dlon in actions:
+            next_lat = lat + dlat * lat_step
+            next_lon = lon + dlon * lon_step
+            if min_lat <= next_lat <= max_lat and min_lon <= next_lon <= max_lon:
+                next_lat_idx, next_lon_idx = lat_lon_to_indices(next_lat, next_lon, lat_step, lon_step)
+                if Q[next_lat_idx, next_lon_idx] == LAND_FLAG:
+                    land_directions.append((dlat, dlon))
+        return land_directions
+
+    def calculate_perpendicular_preference(action, land_directions):
+        preference = 0
+        action_dlat, action_dlon = actions[action]
+        
+        for land_dlat, land_dlon in land_directions:
+            # Calculate dot product - lower means more perpendicular
+            dot_product = abs(action_dlat * land_dlat + action_dlon * land_dlon)
+            # Convert to preference (higher for more perpendicular movement)
+            preference += 1 - dot_product
+        
+        return preference if land_directions else 0
+    
+    for episode in range(episodes):
+        lat, lon = start_coord[0], start_coord[1]
+        trajectory.append((lat, lon))
+        count = 0
+        
+        while geodesic((lat, lon), (end_coord[0], end_coord[1])).km > 1 and count < loop_range:
+            current_distance = geodesic((lat, lon), (end_coord[0], end_coord[1])).km
+            print(f"Current lat: {lat:.4f}, current lon: {lon:.4f}")
+            lat_idx, lon_idx = lat_lon_to_indices(lat, lon, lat_step, lon_step)
+            
+            # Check for adjacent land
+            land_directions = check_adjacent_land(lat, lon, lat_step, lon_step)
+            
+            valid_moves = []
+            for action, (dlat, dlon) in enumerate(actions):
+                next_lat = lat + dlat * lat_step
+                next_lon = lon + dlon * lon_step
+                if min_lat <= next_lat <= max_lat and min_lon <= next_lon <= max_lon:
+                    next_lat_idx, next_lon_idx = lat_lon_to_indices(next_lat, next_lon, lat_step, lon_step)
+                    if Q[next_lat_idx, next_lon_idx] != LAND_FLAG:
+                        perpendicular_bonus = calculate_perpendicular_preference(action, land_directions) * 50  # Adjust multiplier as needed
+                        valid_moves.append((Q[next_lat_idx, next_lon_idx] + perpendicular_bonus, action))
+            
+            if not valid_moves:
+                print("No valid moves available... applying perturbation")
+                lat, lon = apply_significant_perturbation(lat, lon, end_coord)
+                propagate_negative_reward(lat_idx, lon_idx)
+                continue
+            
+            if np.random.uniform(0, 1) < epsilon:
+                goal_bearing = calculate_bearing(lat, lon, end_coord[0], end_coord[1])
+                action_preferences = []
+                for q_val, action in valid_moves:
+                    dlat, dlon = actions[action]
+                    next_lat = lat + dlat * lat_step
+                    next_lon = lon + dlon * lon_step
+                    action_bearing = calculate_bearing(lat, lon, next_lat, next_lon)
+                    bearing_diff = min(abs(action_bearing - goal_bearing), 360 - abs(action_bearing - goal_bearing))
+                    perpendicular_bonus = calculate_perpendicular_preference(action, land_directions) * 30  # Smaller bonus for exploration
+                    action_preferences.append((bearing_diff - perpendicular_bonus, action))
+                action_preferences.sort()
+                action = action_preferences[np.random.randint(0, min(3, len(action_preferences)))][1]
+            else:
+                action = max(valid_moves)[1]
+            
+            next_lat, next_lon = next_state(lat, lon, action, lat_step, lon_step)
+            next_lat_idx, next_lon_idx = lat_lon_to_indices(next_lat, next_lon, lat_step, lon_step)
+            
+            direction = calculate_bearing(lat, lon, next_lat, next_lon)
+            weather_reward = get_weather_reward(next_lat, next_lon, direction)
+            next_distance = geodesic((next_lat, next_lon), (end_coord[0], end_coord[1])).km
+            distance_reward = 100 * (current_distance - next_distance) / current_distance
+            
+            # Add land avoidance reward
+            land_avoidance_reward = calculate_perpendicular_preference(action, land_directions) * 40
+            total_reward = weather_reward + distance_reward + land_avoidance_reward
+            
+            Q[lat_idx, lon_idx] += alpha * (total_reward + gamma * Q[next_lat_idx, next_lon_idx] - Q[lat_idx, lon_idx])
+            
+            lat, lon = next_lat, next_lon
+            trajectory.append((lat, lon))
+            
+            if check_if_stuck(lat, lon):
+                epsilon = min(1.0, epsilon * 1.5)
+                print("Agent is stuck...")
+            
+            count += 1
+        
+        epsilon = max(0.01, epsilon * 0.99)
+    
+    plot_trajectory(trajectory, start_coord, end_coord)
 
 # %%
-# path = navigate_to_goal(start_coord,end_coord)
-# for i in path:
-#     print(i)
-len(Q)
+def plot_trajectory(trajectory, start_coord, end_coord):
+    shapefile_path = "/Users/krisha/STUFF/env2/NE Admin 0 Countries/ne_110m_admin_0_countries.shp"
+    land = gpd.read_file(shapefile_path)
 
-# %% [markdown]
-# TO implement:
-# 1. Reduce the grid size from (num_lat)$\times$(num_lon) to step wise grid formation (controllable precision).
-# 2. Apply significant perturbation 1 may be faster but random values wont align with grid levels. To caluclate (int) $\times$ (step value)$\times$(operator)
+    fig, ax = plt.subplots(figsize=(12, 8))
+    land.boundary.plot(ax=ax, linewidth=1, color="black")
+
+    # Plot trajectory
+    lats, lons = zip(*trajectory)
+    ax.plot(lons, lats, 'r-', linewidth=2, alpha=0.7)
+    ax.plot(lons, lats, 'bo', markersize=4, alpha=0.5)
+    
+    # Plot start and end points
+    ax.plot(start_coord[1], start_coord[0], 'go', markersize=10, label='Start')
+    ax.plot(end_coord[1], end_coord[0], 'ro', markersize=10, label='End')
+
+    ax.set_xlim(min_lon, max_lon)
+    ax.set_ylim(min_lat, max_lat)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    plt.title("Agent Trajectory")
+    plt.legend()
+    plt.show()
 
 # %%
-# import matplotlib.pyplot as plt
-# from mpl_toolkits.basemap import Basemap
-
-# plt.figure(figsize=(10,8))
-# m = Basemap(projection='merc',llcrnrlat=min_lat,urcrnrlat=max_lat,llcrnrlon=min_lon,urcrnrlon=max_lon,resolution='c')
-# m.drawcoastlines()
-# m.drawcountries()
-# m.drawmapboundary()
-
-# for lon,lat in path:
-#     x,y = m(lon,lat)
-#     m.plot(x,y,'bo',markersize=5)
-
-# #connecting points with lines
-# lons,lats = zip(*path)
-# x,y = m(lons,lats)
-# m.plot(x,y,'r-',markersize=5)
-
-# plt.title("map")
-# plt.show()
-
-# %% [markdown]
-# 
+q_learning_land(lat_step, lon_step, start_coord,end_coord)
 
 
